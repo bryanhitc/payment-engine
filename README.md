@@ -1,6 +1,6 @@
 # Payment Engine
 
-For an in-depth explanation, please read the code + associated comments.
+For an in-depth explanation, please read the code, associated comments, and tests.
 
 ## Invariants
 
