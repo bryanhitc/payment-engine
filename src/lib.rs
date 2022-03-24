@@ -1,7 +1,7 @@
 pub mod engine;
 pub mod parse;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use parse::Amount;
 use serde::{Deserialize, Serialize};
@@ -72,8 +72,10 @@ struct Client {
     //
     // Again, would be nice if we could restrict this to only
     // deposit/withdrawal variants within the type system.
-    basic_transactions: HashMap<TransactionId, Transaction>,
-    disputes: HashSet<TransactionId>,
+    //
+    // Using BTreeMap + BTreeSet for less memory overhead
+    basic_transactions: BTreeMap<TransactionId, Transaction>,
+    disputes: BTreeSet<TransactionId>,
 }
 
 impl Client {
@@ -83,8 +85,8 @@ impl Client {
             available: Amount::from(0),
             held: Amount::from(0),
             is_locked: false,
-            basic_transactions: HashMap::new(),
-            disputes: HashSet::new(),
+            basic_transactions: BTreeMap::new(),
+            disputes: BTreeSet::new(),
         }
     }
 }

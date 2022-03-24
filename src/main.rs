@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use log::info;
 
-use payment_engine::engine::{PaymentEngine, StreamPaymentEngine};
+use payment_engine::engine::{PaymentEngine, SerialPaymentEngine};
 
 fn main() -> anyhow::Result<()> {
     // Since the executable name is always the first argument, we must skip to
@@ -17,7 +17,11 @@ fn main() -> anyhow::Result<()> {
 
     info!("Reading input from {input_file_path}");
 
-    let mut engine = StreamPaymentEngine::default();
+    // TODO (PERF + CORRECTNESS): Address StreamPaymentEngine's thread
+    // issue (N threads where N = unique clients... need a threadpool)
+    // and enable it by default.
+    // let mut engine = StreamPaymentEngine::default();
+    let mut engine = SerialPaymentEngine::default();
 
     for row in reader.deserialize() {
         let transaction = row?;
