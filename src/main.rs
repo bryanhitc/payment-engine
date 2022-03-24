@@ -20,7 +20,13 @@ fn main() -> anyhow::Result<()> {
     // TODO (PERF + CORRECTNESS): Address StreamPaymentEngine's thread
     // issue (N threads where N = unique clients... need a threadpool)
     // and enable it by default.
+    //
+    // I included this anyway to show give you a good high-level idea of
+    // how I think it may work. In practice, this would connect to a
+    // distributed queue + enqueue => worker nodes pull.
+    //
     // let mut engine = StreamPaymentEngine::default();
+
     let mut engine = SerialPaymentEngine::default();
 
     for row in reader.deserialize() {
