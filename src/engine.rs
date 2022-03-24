@@ -1,7 +1,7 @@
-use std::thread::JoinHandle;
+use std::{collections::HashMap, fmt::Display, thread::JoinHandle};
 
 use crossbeam::channel::{Receiver, SendError, Sender};
-use log::{debug, info, warn};
+use log::{debug, error, info};
 
 use crate::*;
 
@@ -58,6 +58,25 @@ impl ClientManager for MultiClientManager {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TransactionProcessError {
+    ClientLocked(ClientId, TransactionId),
+    InsufficientFunds(ClientId, TransactionId),
+    InvalidDisputeNotFound(ClientId, TransactionId),
+    InvalidDisputeDuplicate(ClientId, TransactionId),
+    InvalidResolveNotFound(ClientId, TransactionId),
+    InvalidResolveNotDisputed(ClientId, TransactionId),
+    InvalidChargeBackNotFound(ClientId, TransactionId),
+    InvalidChargeBackDisputed(ClientId, TransactionId),
+    Unknown,
+}
+
+impl Display for TransactionProcessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("[Client] Transaction failed: {:?}", self))
+    }
+}
+
 // Contains the core business logic for processing transactions
 #[derive(Debug)]
 struct TransactionProcessor<C>
@@ -79,7 +98,13 @@ where
         &self.client_manager
     }
 
-    fn process(&mut self, transaction: Transaction) {
+    fn process(&mut self, transaction: Transaction) -> Result<(), TransactionProcessError> {
+        debug!(
+            "[Client {}] Processing transaction {:?}",
+            transaction.client_id, transaction
+        );
+
+        let id = transaction.id;
         let client = self
             .client_manager
             .get_or_insert_client_mut(transaction.client_id);
@@ -88,15 +113,8 @@ where
             // In a real system, we probably don't want to drop a transaction
             // if the account is locked, but rather keep it in a separate queue.
             // I'm just going to drop it for this coding exercise, though :)
-            warn!(
-                "[Client {}] account is locked; dropping transaction {:?}",
-                client.id, transaction
-            );
-
-            return;
+            return Err(TransactionProcessError::ClientLocked(client.id, id));
         }
-
-        let id = transaction.id;
 
         match transaction.action {
             TransactionType::Deposit => {
@@ -112,97 +130,111 @@ where
                 client
                     .basic_transactions
                     .insert(transaction.id, transaction);
+
+                Ok(())
             }
             TransactionType::Withdrawal => {
                 let amount = transaction.amount.unwrap();
 
-                if client.available < amount {
-                    // failing silently per PDF's instructions...
-                    warn!(
-                        "[Client {}] insufficient funds; dropping transaction: {:?}",
-                        client.id, transaction
-                    );
-                    return;
-                }
-
-                client.available -= amount;
-                client
-                    .basic_transactions
-                    .insert(transaction.id, transaction);
+                (client.available >= amount)
+                    .then(|| {
+                        client.available -= amount;
+                        client
+                            .basic_transactions
+                            .insert(transaction.id, transaction);
+                    })
+                    .ok_or(TransactionProcessError::InsufficientFunds(client.id, id))
             }
             TransactionType::Dispute => {
-                let basic_transaction = client.basic_transactions.get(&id);
+                let basic_transaction = client.basic_transactions.get(&id).ok_or(
+                    TransactionProcessError::InvalidDisputeNotFound(client.id, id),
+                )?;
 
-                if basic_transaction.is_none() {
-                    // failing silently per PDF's instructions
-                    warn!(
-                        "[Client {}] dispute does not reference valid deposit/withdrawal transaction; dropping transaction: {:?}",
-                        client.id, transaction
-                    );
-                    return;
-                }
+                client
+                    .disputes
+                    .insert(id)
+                    .then(|| {
+                        let amount = basic_transaction.amount.unwrap();
 
-                let basic_transaction = basic_transaction.unwrap();
-                let is_duplicate_dispute = !client.disputes.insert(transaction.id);
-
-                if is_duplicate_dispute {
-                    warn!(
-                        "[Client {}] received duplicate dispute; dropping transaction: {:?}",
-                        client.id, transaction
-                    );
-                    return;
-                }
-
-                let amount = basic_transaction.amount.unwrap();
-
-                client.available -= amount;
-                client.held += amount;
+                        // Not sure if charging back a withdrawal (sending money back) makes sense...
+                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                        // for this + simply change amount's sign.
+                        match basic_transaction.action {
+                            TransactionType::Deposit => {
+                                client.available -= amount;
+                                client.held += amount;
+                            }
+                            TransactionType::Withdrawal => {
+                                client.available += amount;
+                                client.held -= amount;
+                            }
+                            _ => unreachable!("invariant violated"),
+                        }
+                    })
+                    .ok_or(TransactionProcessError::InvalidDisputeDuplicate(
+                        client.id, id,
+                    ))
             }
             TransactionType::Resolve => {
-                let basic_transaction =
-                    client
-                        .basic_transactions
-                        .get(&id)
-                        .and_then(|basic_transaction| {
-                            client.disputes.remove(&id).then(|| basic_transaction)
-                        });
+                let basic_transaction = client.basic_transactions.get(&id).ok_or(
+                    TransactionProcessError::InvalidResolveNotFound(client.id, id),
+                )?;
 
-                if basic_transaction.is_none() {
-                    // fail silently per PDF's instructions due to non-existant transaction/dispute
-                    warn!(
-                        "[Client {}] resolve does not reference valid outstanding disputed deposit/withdrawal transaction; dropping transaction: {:?}",
-                        client.id, transaction
-                    );
-                    return;
-                }
+                client
+                    .disputes
+                    .remove(&id)
+                    .then(|| {
+                        let amount = basic_transaction.amount.unwrap();
 
-                let amount = basic_transaction.unwrap().amount.unwrap();
-
-                client.held -= amount;
-                client.available += amount;
+                        // Not sure if charging back a withdrawal (sending money back) makes sense...
+                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                        // for this + simply change amount's sign.
+                        match basic_transaction.action {
+                            TransactionType::Deposit => {
+                                client.held -= amount;
+                                client.available += amount;
+                            }
+                            TransactionType::Withdrawal => {
+                                client.held += amount;
+                                client.available -= amount;
+                            }
+                            _ => unreachable!("invariant violated"),
+                        }
+                    })
+                    .ok_or(TransactionProcessError::InvalidResolveNotDisputed(
+                        client.id, id,
+                    ))
             }
             TransactionType::Chargeback => {
-                let basic_transaction =
-                    client
-                        .basic_transactions
-                        .get(&id)
-                        .and_then(|basic_transaction| {
-                            client.disputes.remove(&id).then(|| basic_transaction)
-                        });
+                let basic_transaction = client.basic_transactions.get(&id).ok_or(
+                    TransactionProcessError::InvalidResolveNotFound(client.id, id),
+                )?;
 
-                if basic_transaction.is_none() {
-                    // fail silently per PDF's instructions due to non-existant transaction/dispute
-                    warn!(
-                        "[Client {}] resolve does not reference valid outstanding disputed deposit/withdrawal transaction; dropping transaction: {:?}",
-                        client.id, transaction
-                    );
-                    return;
-                }
+                client
+                    .disputes
+                    .remove(&id)
+                    .then(|| {
+                        let amount = basic_transaction.amount.unwrap();
 
-                let amount = basic_transaction.unwrap().amount.unwrap();
+                        // Should we lock the account if the user charge backs a withdrawal (sends money back)??
+                        client.is_locked = true;
 
-                client.held -= amount;
-                client.is_locked = true;
+                        // Not sure if charging back a withdrawal (sending money back) makes sense...
+                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                        // for this + simply change amount's sign.
+                        match basic_transaction.action {
+                            TransactionType::Deposit => {
+                                client.held -= amount;
+                            }
+                            TransactionType::Withdrawal => {
+                                client.held += amount;
+                            }
+                            _ => unreachable!("invariant violated"),
+                        }
+                    })
+                    .ok_or(TransactionProcessError::InvalidResolveNotDisputed(
+                        client.id, id,
+                    ))
             }
         }
     }
@@ -224,11 +256,19 @@ pub struct SerialPaymentEngine {
 }
 
 impl PaymentEngine for SerialPaymentEngine {
-    type ProcessError = anyhow::Error;
+    type ProcessError = TransactionProcessError;
     type SnapshotError = anyhow::Error;
 
     fn process(&mut self, transaction: Transaction) -> Result<(), Self::ProcessError> {
-        self.processor.process(transaction);
+        if let Err(err) = self.processor.process(transaction) {
+            // Silently fail + log if business logic error per PDF instructions
+            error!("{}", err);
+
+            if let TransactionProcessError::Unknown = err {
+                return Err(err);
+            }
+        }
+
         Ok(())
     }
 
@@ -262,7 +302,7 @@ impl Default for SerialPaymentEngine {
 // calculations, etc.)
 #[derive(Debug, Default)]
 pub struct StreamPaymentEngine {
-    client_workers: HashMap<ClientId, JoinHandle<ClientSnapshot>>,
+    client_workers: HashMap<ClientId, JoinHandle<Result<ClientSnapshot, TransactionProcessError>>>,
     senders: HashMap<ClientId, Sender<Transaction>>,
     num_enqueued_transactions: usize,
 }
@@ -271,22 +311,28 @@ impl StreamPaymentEngine {
     fn client_worker_thread(
         client_id: ClientId,
         receiver: Receiver<Transaction>,
-    ) -> ClientSnapshot {
+    ) -> Result<ClientSnapshot, TransactionProcessError> {
         let client_manager = SingleClientManager::new(client_id);
         let mut processor = TransactionProcessor::new(client_manager);
 
         while let Ok(transaction) = receiver.recv() {
-            debug!("Processing transaction {:?}", transaction);
-            processor.process(transaction);
+            if let Err(err) = processor.process(transaction) {
+                // Silently fail + log if business logic error per PDF instructions
+                error!("{}", err);
+
+                if let TransactionProcessError::Unknown = err {
+                    return Err(err);
+                }
+            };
         }
 
-        processor.get_client_manager().generate_snapshot()
+        Ok(processor.get_client_manager().generate_snapshot())
     }
 }
 
 impl PaymentEngine for StreamPaymentEngine {
     type ProcessError = SendError<Transaction>;
-    type SnapshotError = anyhow::Error;
+    type SnapshotError = TransactionProcessError;
 
     fn process(&mut self, mut transaction: Transaction) -> Result<(), Self::ProcessError> {
         transaction.chrono_order = self.num_enqueued_transactions;
@@ -323,10 +369,10 @@ impl PaymentEngine for StreamPaymentEngine {
 
         let mut results = Vec::with_capacity(self.client_workers.len());
 
-        for (client_id, handle) in self.client_workers {
+        for (_client_id, handle) in self.client_workers {
             let result = handle
                 .join()
-                .map_err(|err| anyhow::anyhow!("{client_id} worker failed: {:?}", err));
+                .unwrap_or(Err(TransactionProcessError::Unknown));
 
             results.push(result);
         }

@@ -11,8 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 // up front and/or handled by clients, and then the rest of the system would use
 // this value interally.
 
-// INVARIANT 2: Amount * MAX_AMOUNT_DECIMAL_SHIFT <= i64::MAX.
-// INVARIANT 3: Amount has <= 4 digits after the decimal.
+// INVARIANT 1: Amount * MAX_AMOUNT_DECIMAL_SHIFT <= i64::MAX.
+// INVARIANT 2: Amount has <= 4 digits after the decimal.
 //
 // These invariants are enforced via Amount::new. In a real system, these invariants
 // should probably only be checked at the creation of this data (e.g., if it's user input).

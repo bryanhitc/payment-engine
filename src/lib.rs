@@ -1,7 +1,7 @@
 pub mod engine;
 pub mod parse;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use parse::Amount;
 use serde::{Deserialize, Serialize};
@@ -34,19 +34,22 @@ pub struct Transaction {
     // not playing nicely and I don't want to implement a
     // custom deserializer/serializer for this struct.
     //
+    // Also, it'd be ideal to merge deposit + withdraw into one variant
+    // and simply change the amount's sign on deserialization/serialization.
+    //
     // Paying the cost of branching when we know whether this
     // is Some(T) or None based on the type is unfortunate.
     // It *should* be enforced via the type system.
     pub amount: Option<Amount>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct ClientSnapshot {
-    client: ClientId,
-    available: Amount,
-    held: Amount,
-    total: Amount,
-    locked: bool,
+    pub client: ClientId,
+    pub available: Amount,
+    pub held: Amount,
+    pub total: Amount,
+    pub locked: bool,
 }
 
 impl From<&Client> for ClientSnapshot {

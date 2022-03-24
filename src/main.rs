@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
 
     for row in reader.deserialize() {
         let transaction = row?;
-        engine.process(transaction)?;
+        engine.process(transaction).map_err(anyhow::Error::from)?;
     }
 
     let worker_results = engine.finalize();
