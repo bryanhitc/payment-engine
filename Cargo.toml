@@ -10,7 +10,6 @@ anyhow = "1"
 crossbeam = "0.8"
 csv = { version = "1" }
 log = "0.4"
-rayon = "1"
 serde = { version = "1", features = ["derive" ]}
 thiserror = "1"
 
