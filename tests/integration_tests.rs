@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod integration_tests {
     use payment_engine::{
-        engine::{PaymentEngine, SerialPaymentEngine},
+        engine::{PaymentEngine, SerialPaymentEngine, StreamPaymentEngine},
         parse::Amount,
         ClientSnapshot, Transaction,
     };
@@ -51,6 +51,208 @@ mod integration_tests {
                 held: Amount::new(3.0).unwrap(),
                 total: Amount::new(3.0).unwrap(),
                 locked: false,
+            },
+            snapshot
+        );
+    }
+
+    #[test]
+    fn can_not_resolve_without_dispute() {
+        let mut engine = SerialPaymentEngine::default();
+
+        let transactions = [
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(3.0).ok(),
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Resolve,
+                amount: None,
+            },
+        ];
+
+        for transaction in transactions {
+            let result = engine.process(transaction);
+            assert!(result.is_ok());
+        }
+
+        let snapshot = engine.finalize().into_iter().next().unwrap().unwrap();
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 1,
+                available: Amount::new(3.0).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(3.0).unwrap(),
+                locked: false,
+            },
+            snapshot
+        );
+    }
+
+    #[test]
+    fn can_not_chargeback_without_dispute() {
+        let mut engine = SerialPaymentEngine::default();
+
+        let transactions = [
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(3.0).ok(),
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+        ];
+
+        for transaction in transactions {
+            let result = engine.process(transaction);
+            assert!(result.is_ok());
+        }
+
+        let snapshot = engine.finalize().into_iter().next().unwrap().unwrap();
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 1,
+                available: Amount::new(3.0).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(3.0).unwrap(),
+                locked: false,
+            },
+            snapshot
+        );
+    }
+
+    #[test]
+    fn can_not_double_resolve() {
+        let mut engine = SerialPaymentEngine::default();
+
+        let transactions = [
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(3.0).ok(),
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(9.0).ok(),
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Dispute,
+                amount: None,
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Resolve,
+                amount: None,
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Resolve,
+                amount: None,
+            },
+        ];
+
+        for transaction in transactions {
+            let result = engine.process(transaction);
+            assert!(result.is_ok());
+        }
+
+        let snapshot = engine.finalize().into_iter().next().unwrap().unwrap();
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 1,
+                available: Amount::new(12.0).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(12.0).unwrap(),
+                locked: false,
+            },
+            snapshot
+        );
+    }
+
+    #[test]
+    fn can_not_double_chargeback() {
+        let mut engine = SerialPaymentEngine::default();
+
+        let transactions = [
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(3.0).ok(),
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(9.0).ok(),
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Dispute,
+                amount: None,
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+        ];
+
+        for transaction in transactions {
+            let result = engine.process(transaction);
+            assert!(result.is_ok());
+        }
+
+        let snapshot = engine.finalize().into_iter().next().unwrap().unwrap();
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 1,
+                available: Amount::new(9.0).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(9.0).unwrap(),
+                locked: true,
             },
             snapshot
         );
@@ -259,8 +461,139 @@ mod integration_tests {
     }
 
     #[test]
-    fn integration() {
+    fn integration_serial() {
         let mut engine = SerialPaymentEngine::default();
+
+        let transactions = [
+            Transaction {
+                id: 1,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(3.0).ok(),
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Withdrawal,
+                amount: Amount::new(1.5).ok(),
+            },
+            Transaction {
+                id: 3,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(4.5).ok(),
+            },
+            Transaction {
+                id: 4,
+                client_id: 2,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(9.0).ok(),
+            },
+            // this will not go through because wrong client id
+            Transaction {
+                id: 4,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Dispute,
+                amount: None,
+            },
+            // this will not go through because wrong client id
+            Transaction {
+                id: 4,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Dispute,
+                amount: None,
+            },
+            Transaction {
+                id: 2,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Chargeback,
+                amount: None,
+            },
+            Transaction {
+                id: 5,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Deposit,
+                amount: Amount::new(100.0).ok(),
+            },
+            Transaction {
+                id: 6,
+                client_id: 1,
+                chrono_order: 0,
+                action: payment_engine::TransactionType::Withdrawal,
+                amount: Amount::new(30.0).ok(),
+            },
+        ];
+
+        for transaction in transactions {
+            let result = engine.process(transaction);
+            assert!(result.is_ok());
+        }
+
+        let mut snapshots = engine
+            .finalize()
+            .into_iter()
+            .filter_map(|result| result.ok())
+            .collect::<Vec<_>>();
+
+        snapshots.sort_by_key(|snapshot| snapshot.client);
+
+        let mut snapshots = snapshots.into_iter();
+
+        let client_1_snapshot = snapshots.next().unwrap();
+        let client_2_snapshot = snapshots.next().unwrap();
+
+        assert_eq!(1, client_1_snapshot.client);
+        assert_eq!(2, client_2_snapshot.client);
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 1,
+                available: Amount::new(7.5).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(7.5).unwrap(),
+                locked: true,
+            },
+            client_1_snapshot
+        );
+
+        assert_eq!(
+            ClientSnapshot {
+                client: 2,
+                available: Amount::new(9.0).unwrap(),
+                held: Amount::new(0.0).unwrap(),
+                total: Amount::new(9.0).unwrap(),
+                locked: false,
+            },
+            client_2_snapshot
+        );
+    }
+
+    // TODO (ENHANCEMENT + MAINTAINABILITY): Use test_case unstable feature
+    #[test]
+    fn integration_stream() {
+        let mut engine = StreamPaymentEngine::default();
 
         let transactions = [
             Transaction {
