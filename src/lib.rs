@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use parse::Amount;
 use serde::{Deserialize, Serialize};
 
-pub type ClientId = u16;
+type ClientId = u16;
 type TransactionId = u32;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransactionType {
     Deposit,

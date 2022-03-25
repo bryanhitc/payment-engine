@@ -19,7 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 // Internal services can uphold this invariant, which should allow us to eliminate
 // the compute overhead entirely.
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq)]
 pub enum AmountParseError {
     Overflow(f64),
     TooPrecise(f64),
