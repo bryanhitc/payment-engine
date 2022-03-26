@@ -71,7 +71,8 @@ impl Amount {
         let amount_shifted = amount * Self::MAX_AMOUNT_DECIMAL_SHIFT;
         let amount_rounded = amount_shifted.round();
 
-        if !amount_shifted.eq(&amount_rounded) {
+        if (amount_rounded - amount_shifted).abs() > 0.0001 {
+            println!("{} = {}", &amount_shifted, amount_rounded);
             return Err(AmountParseError::TooPrecise(amount));
         }
 
@@ -198,6 +199,11 @@ mod amount_tests {
 
         assert!(amount.is_ok());
         assert_eq!(amount.unwrap().0, 1234567);
+
+        let amount = Amount::new(562.844);
+
+        assert!(amount.is_ok());
+        assert_eq!(amount.unwrap().0, 5628440);
     }
 }
 
