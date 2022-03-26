@@ -37,7 +37,8 @@ fn main() -> anyhow::Result<()> {
     let worker_results = engine.finalize();
 
     {
-        let stdio = std::io::stdout().lock();
+        let stdout = std::io::stdout();
+        let stdio = stdout.lock();
         let mut writer = csv::Writer::from_writer(stdio);
 
         for result in worker_results {
