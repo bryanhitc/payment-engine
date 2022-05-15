@@ -72,7 +72,7 @@ impl Amount {
         let amount_rounded = amount_shifted.round();
 
         if (amount_rounded - amount_shifted).abs() > 0.0001 {
-            println!("{} = {}", &amount_shifted, amount_rounded);
+            println!("{} = {}", amount_shifted, amount_rounded);
             return Err(AmountParseError::TooPrecise(amount));
         }
 
@@ -221,13 +221,7 @@ mod serde_tests {
         assert!(amount.is_ok());
 
         let amount = amount.unwrap();
-        let transaction = Transaction {
-            id: 1,
-            client_id: 2,
-            chrono_order: 0,
-            action: TransactionType::Withdrawal,
-            amount: Some(amount),
-        };
+        let transaction = Transaction::new(1, 2, TransactionType::Withdrawal, Some(amount));
 
         assert_tokens(
             &transaction,
@@ -255,13 +249,7 @@ mod serde_tests {
 
     #[test]
     pub fn serialize_and_deserialize_non_amount_transactions() {
-        let transaction = Transaction {
-            id: 1,
-            client_id: 2,
-            chrono_order: 0,
-            action: TransactionType::Resolve,
-            amount: None,
-        };
+        let transaction = Transaction::new(1, 2, TransactionType::Resolve, None);
 
         assert_tokens(
             &transaction,

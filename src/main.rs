@@ -1,7 +1,10 @@
+#![deny(clippy::all)]
+#![warn(clippy::pedantic)]
+
 use anyhow::anyhow;
 use log::info;
 
-use payment_engine::engine::{PaymentEngine, SerialPaymentEngine};
+use payment_engine::engine::{Engine, PaymentEngine};
 
 fn main() -> anyhow::Result<()> {
     // Since the executable name is always the first argument, we must skip to
@@ -24,14 +27,12 @@ fn main() -> anyhow::Result<()> {
     // I included this anyway to show give you a good high-level idea of
     // how I think it may work. In practice, this would connect to a
     // distributed queue + enqueue => worker nodes pull.
-    //
-    // let mut engine = StreamPaymentEngine::default();
 
-    let mut engine = SerialPaymentEngine::default();
+    let mut engine = Engine::default();
 
     for row in reader.deserialize() {
         let transaction = row?;
-        engine.process(transaction).map_err(anyhow::Error::from)?;
+        engine.process(transaction)?;
     }
 
     let worker_results = engine.finalize();

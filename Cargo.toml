@@ -7,14 +7,19 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-crossbeam = "0.8"
-csv = { version = "1" }
+crossbeam = { version = "0.8", optional = true }
+csv = "1"
 log = "0.4"
-serde = { version = "1", features = ["derive" ]}
+serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 
 [dev-dependencies]
 serde_test = "1"
 
 [profile.release]
-lto = 'thin'
+lto = 'fat'
+
+[features]
+default = ["serial"]
+serial = []
+stream = ["dep:crossbeam"]

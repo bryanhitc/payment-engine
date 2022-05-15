@@ -1,9 +1,13 @@
-use std::{collections::HashMap, fmt::Display, thread::JoinHandle};
+#[cfg_attr(feature = "serial", path = "serial.rs")]
+#[cfg_attr(feature = "stream", path = "stream.rs")]
+pub(crate) mod engine_impl;
 
-use crossbeam::channel::{Receiver, SendError, Sender};
-use log::{debug, error, info};
+pub type Engine = engine_impl::Engine;
 
-use crate::*;
+use log::{debug, error};
+use std::{collections::HashMap, fmt::Display};
+
+use crate::{Client, ClientId, ClientSnapshot, Transaction, TransactionId, TransactionType};
 
 // Manages client(s) and is used by TransactionProcessor.
 //
@@ -20,31 +24,6 @@ trait ClientManager {
     fn get_or_insert_client_mut(&mut self, client_id: ClientId) -> &mut Client;
 }
 
-// Used by StreamPaymentEngine
-#[derive(Debug)]
-pub struct SingleClientManager {
-    client: Client,
-}
-
-impl SingleClientManager {
-    pub fn new(client_id: ClientId) -> Self {
-        Self {
-            client: Client::new(client_id),
-        }
-    }
-
-    fn generate_snapshot(&self) -> ClientSnapshot {
-        ClientSnapshot::from(&self.client)
-    }
-}
-
-impl ClientManager for SingleClientManager {
-    fn get_or_insert_client_mut(&mut self, _client_id: ClientId) -> &mut Client {
-        &mut self.client
-    }
-}
-
-// Used by SerialPaymentEngine
 #[derive(Debug, Default)]
 pub struct MultiClientManager {
     clients: HashMap<ClientId, Client>,
@@ -90,17 +69,9 @@ impl<C> TransactionProcessor<C>
 where
     C: ClientManager,
 {
-    fn new(client_manager: C) -> Self {
-        TransactionProcessor { client_manager }
-    }
-
-    fn get_client_manager(&self) -> &C {
-        &self.client_manager
-    }
-
     fn process(&mut self, transaction: Transaction) -> Result<(), TransactionProcessError> {
         debug!(
-            "[Client {}] Processing transaction {:?}",
+            "[Client {}] Processing transaction: {:?}",
             transaction.client_id, transaction
         );
 
@@ -249,141 +220,10 @@ pub trait PaymentEngine {
     fn finalize(self) -> Vec<Result<ClientSnapshot, Self::SnapshotError>>;
 }
 
-// Processes transactions immediately/syncronously
-#[derive(Debug)]
-pub struct SerialPaymentEngine {
-    processor: TransactionProcessor<MultiClientManager>,
-}
-
-impl PaymentEngine for SerialPaymentEngine {
-    type ProcessError = TransactionProcessError;
-    type SnapshotError = anyhow::Error;
-
-    fn process(&mut self, transaction: Transaction) -> Result<(), Self::ProcessError> {
-        if let Err(err) = self.processor.process(transaction) {
-            // Silently fail + log if business logic error per PDF instructions
-            error!("{}", err);
-
-            if let TransactionProcessError::Unknown = err {
-                return Err(err);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn finalize(self) -> Vec<Result<ClientSnapshot, Self::SnapshotError>> {
-        let clients = self.processor.client_manager.clients;
-        let mut results = Vec::with_capacity(clients.len());
-
-        for (_, client) in clients {
-            results.push(Ok(ClientSnapshot::from(&client)));
-        }
-
-        results
-    }
-}
-
-impl Default for SerialPaymentEngine {
-    fn default() -> Self {
-        Self {
-            processor: TransactionProcessor {
-                client_manager: MultiClientManager::default(),
-            },
-        }
-    }
-}
-
-// Streams transactions to client-partitioned worker threads for async processing.
-// This allows the main thread to continue adding transactions while worker threads
-// do the actual processing. This is almost certaintly slower than the SerialPaymentEngine
-// for this example problem, but I want to show that I understand how this can be done
-// if transaction processing was more expensive (e.g., database calls, more compute-heavy
-// calculations, etc.)
-#[derive(Debug, Default)]
-pub struct StreamPaymentEngine {
-    client_workers: HashMap<ClientId, JoinHandle<Result<ClientSnapshot, TransactionProcessError>>>,
-    senders: HashMap<ClientId, Sender<Transaction>>,
-    num_enqueued_transactions: usize,
-}
-
-impl StreamPaymentEngine {
-    fn client_worker_thread(
-        client_id: ClientId,
-        receiver: Receiver<Transaction>,
-    ) -> Result<ClientSnapshot, TransactionProcessError> {
-        let client_manager = SingleClientManager::new(client_id);
-        let mut processor = TransactionProcessor::new(client_manager);
-
-        while let Ok(transaction) = receiver.recv() {
-            if let Err(err) = processor.process(transaction) {
-                // Silently fail + log if business logic error per PDF instructions
-                error!("{}", err);
-
-                if let TransactionProcessError::Unknown = err {
-                    return Err(err);
-                }
-            };
-        }
-
-        Ok(processor.get_client_manager().generate_snapshot())
-    }
-}
-
-impl PaymentEngine for StreamPaymentEngine {
-    type ProcessError = SendError<Transaction>;
-    type SnapshotError = TransactionProcessError;
-
-    fn process(&mut self, mut transaction: Transaction) -> Result<(), Self::ProcessError> {
-        transaction.chrono_order = self.num_enqueued_transactions;
-        self.num_enqueued_transactions += 1;
-
-        let client_id = transaction.client_id;
-        let sender = self.senders.entry(client_id).or_insert_with(|| {
-            // TODO (PERF): Would probably be faster to use Ringbuf SPSC bounded channel, but then
-            // we need to handle backpressure appropriately... not going to do that in this exercise
-            let (sender, receiver) = crossbeam::channel::unbounded::<Transaction>();
-
-            info!("[Client {client_id}] spawning worker");
-
-            self.client_workers.insert(
-                client_id,
-                // TODO (PERF + CORRECTNESS): threadpool, otherwise, we have N threads
-                // where N = # unique clients. Obviously, this won't scale.
-                std::thread::spawn(move || Self::client_worker_thread(client_id, receiver)),
-            );
-
-            sender
-        });
-
-        debug!(
-            "[Client {client_id}] Enqueueing transaction: {:?}",
-            transaction
-        );
-        sender.send(transaction)
-    }
-
-    fn finalize(self) -> Vec<Result<ClientSnapshot, Self::SnapshotError>> {
-        // notify workers to finish up...
-        drop(self.senders);
-
-        let mut results = Vec::with_capacity(self.client_workers.len());
-
-        for (_client_id, handle) in self.client_workers {
-            let result = handle
-                .join()
-                .unwrap_or(Err(TransactionProcessError::Unknown));
-
-            results.push(result);
-        }
-
-        results
-    }
-}
-
 #[cfg(test)]
 mod processor_tests {
     use super::*;
+    use crate::parse::Amount;
 
     #[test]
     pub fn can_not_double_resolve() {
@@ -391,33 +231,20 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
-        let resolve = Transaction {
-            id: 2,
-            client_id: 1,
-            chrono_order: 0,
-            action: TransactionType::Resolve,
-            amount: None,
-        };
+        let resolve = Transaction::new(2, 1, TransactionType::Resolve, None);
 
         assert_eq!(Ok(()), processor.process(resolve.clone()));
 
@@ -431,13 +258,7 @@ mod processor_tests {
     pub fn can_not_resolve_without_dispute() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        let resolve = Transaction {
-            id: 2,
-            client_id: 1,
-            chrono_order: 0,
-            action: TransactionType::Resolve,
-            amount: None,
-        };
+        let resolve = Transaction::new(2, 1, TransactionType::Resolve, None);
 
         assert_eq!(
             Err(TransactionProcessError::InvalidResolveNotFound(1, 2)),
@@ -446,13 +267,12 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
@@ -462,13 +282,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         assert_eq!(Ok(()), processor.process(resolve.clone()));
@@ -483,13 +297,7 @@ mod processor_tests {
     pub fn can_not_charge_back_without_dispute() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        let chargeback = Transaction {
-            id: 2,
-            client_id: 1,
-            chrono_order: 0,
-            action: TransactionType::Chargeback,
-            amount: None,
-        };
+        let chargeback = Transaction::new(2, 1, TransactionType::Chargeback, None);
 
         assert_eq!(
             Err(TransactionProcessError::InvalidChargeBackNotFound(1, 2)),
@@ -498,13 +306,12 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
@@ -514,13 +321,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         assert_eq!(Ok(()), processor.process(chargeback.clone()));
@@ -537,24 +338,22 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 1,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(5.0).ok(),
-            })
+            processor.process(Transaction::new(
+                1,
+                1,
+                TransactionType::Deposit,
+                Amount::new(5.0).ok()
+            ))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         {
@@ -566,13 +365,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         {
@@ -584,13 +377,7 @@ mod processor_tests {
 
         assert_eq!(
             Err(TransactionProcessError::InvalidDisputeDuplicate(1, 2)),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         let client = processor.client_manager.get_or_insert_client_mut(1);
@@ -605,24 +392,17 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         assert!(
@@ -634,13 +414,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Chargeback,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
         );
 
         assert!(
@@ -657,24 +431,22 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 1,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(1.5).ok(),
-            })
+            processor.process(Transaction::new(
+                1,
+                1,
+                TransactionType::Deposit,
+                Amount::new(1.5).ok()
+            ))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         {
@@ -686,13 +458,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         {
@@ -704,13 +470,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Chargeback,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
         );
 
         let client = processor.client_manager.get_or_insert_client_mut(1);
@@ -726,13 +486,8 @@ mod processor_tests {
         let client = processor.client_manager.get_or_insert_client_mut(1);
         client.is_locked = true;
 
-        let mut transaction = Transaction {
-            id: 2,
-            chrono_order: 0,
-            client_id: 1,
-            action: TransactionType::Deposit,
-            amount: Amount::new(3.0).ok(),
-        };
+        let mut transaction =
+            Transaction::new(2, 1, TransactionType::Deposit, Amount::new(3.0).ok());
 
         let result = processor.process(transaction.clone());
 
@@ -768,24 +523,17 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
             Err(TransactionProcessError::InvalidDisputeNotFound(2, 2)),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 2,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 2, TransactionType::Dispute, None))
         );
     }
 
@@ -798,35 +546,22 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            })
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            ))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Chargeback,
-                amount: None,
-            })
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
         );
 
         assert!(
@@ -850,13 +585,12 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 1,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            }),
+            processor.process(Transaction::new(
+                1,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            )),
         );
 
         assert_eq!(
@@ -869,24 +603,12 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 1,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            }),
+            processor.process(Transaction::new(1, 1, TransactionType::Dispute, None)),
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 1,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Resolve,
-                amount: None,
-            }),
+            processor.process(Transaction::new(1, 1, TransactionType::Resolve, None)),
         );
 
         assert_eq!(
@@ -904,24 +626,22 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            }),
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            )),
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Withdrawal,
-                amount: Amount::new(1.0).ok(),
-            }),
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Withdrawal,
+                Amount::new(1.0).ok()
+            )),
         );
 
         {
@@ -933,13 +653,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            }),
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
         );
 
         {
@@ -951,13 +665,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Resolve,
-                amount: None,
-            }),
+            processor.process(Transaction::new(2, 1, TransactionType::Resolve, None)),
         );
 
         let client = processor.client_manager.get_or_insert_client_mut(1);
@@ -972,35 +680,27 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Deposit,
-                amount: Amount::new(3.0).ok(),
-            }),
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            )),
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Withdrawal,
-                amount: Amount::new(1.0).ok(),
-            }),
+            processor.process(Transaction::new(
+                2,
+                1,
+                TransactionType::Withdrawal,
+                Amount::new(1.0).ok()
+            )),
         );
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Dispute,
-                amount: None,
-            }),
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
         );
 
         {
@@ -1012,13 +712,7 @@ mod processor_tests {
 
         assert_eq!(
             Ok(()),
-            processor.process(Transaction {
-                id: 2,
-                client_id: 1,
-                chrono_order: 0,
-                action: TransactionType::Chargeback,
-                amount: None,
-            }),
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None)),
         );
 
         let client = processor.client_manager.get_or_insert_client_mut(1);

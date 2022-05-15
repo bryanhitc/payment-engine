@@ -23,8 +23,6 @@ pub enum TransactionType {
 pub struct Transaction {
     #[serde(rename = "tx")]
     pub id: TransactionId,
-    #[serde(skip)]
-    pub chrono_order: usize,
     #[serde(rename = "client")]
     pub client_id: ClientId,
     #[serde(rename = "type")]
@@ -41,6 +39,22 @@ pub struct Transaction {
     // is Some(T) or None based on the type is unfortunate.
     // It *should* be enforced via the type system.
     pub amount: Option<Amount>,
+}
+
+impl Transaction {
+    pub const fn new(
+        id: TransactionId,
+        client_id: ClientId,
+        action: TransactionType,
+        amount: Option<Amount>,
+    ) -> Self {
+        Self {
+            id,
+            client_id,
+            action,
+            amount,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
