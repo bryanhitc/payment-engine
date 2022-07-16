@@ -53,7 +53,7 @@ impl Display for AmountParseError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd)]
 pub struct Amount(i64);
 
 impl Amount {

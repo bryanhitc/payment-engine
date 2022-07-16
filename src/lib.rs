@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 type ClientId = u16;
 type TransactionId = u32;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransactionType {
     Deposit,
@@ -19,7 +19,7 @@ pub enum TransactionType {
     Chargeback,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Transaction {
     #[serde(rename = "tx")]
     pub id: TransactionId,
@@ -57,7 +57,7 @@ impl Transaction {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ClientSnapshot {
     pub client: ClientId,
     pub available: Amount,

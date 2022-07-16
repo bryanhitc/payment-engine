@@ -37,7 +37,7 @@ impl ClientManager for MultiClientManager {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TransactionProcessError {
     ClientLocked(ClientId, TransactionId),
     InsufficientFunds(ClientId, TransactionId),
