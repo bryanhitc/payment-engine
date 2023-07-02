@@ -17,7 +17,9 @@ thiserror = "1"
 serde_test = "1"
 
 [profile.release]
-lto = 'fat'
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 
 [features]
 default = ["serial"]
