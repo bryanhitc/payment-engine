@@ -12,7 +12,6 @@ fn main() -> anyhow::Result<()> {
     let input_file_path = std::env::args()
         .nth(1)
         .ok_or_else(|| anyhow!("No input file path specified"))?;
-
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .flexible(true)
@@ -27,21 +26,17 @@ fn main() -> anyhow::Result<()> {
     // I included this anyway to show give you a good high-level idea of
     // how I think it may work. In practice, this would connect to a
     // distributed queue + enqueue => worker nodes pull.
-
     let mut engine = Engine::default();
-
     for row in reader.deserialize() {
         let transaction = row?;
         engine.process(transaction)?;
     }
 
     let worker_results = engine.finalize();
-
     {
         let stdout = std::io::stdout();
         let stdio = stdout.lock();
         let mut writer = csv::Writer::from_writer(stdio);
-
         for result in worker_results {
             let snapshot = result?;
             writer.serialize(&snapshot)?;

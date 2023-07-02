@@ -37,7 +37,6 @@ impl AmountParseError {
             // TODO (CORRECTNESS + MAINTANABILITY): Use Amount::MAX_DIGITS_AFTER_DECIMAL and construct &str at compile time
             AmountParseError::TooPrecise(amount) => (amount, "only 4 digits after decimal"),
         };
-
         serde::de::Error::invalid_value(serde::de::Unexpected::Float(amount), &msg)
     }
 }
@@ -70,7 +69,6 @@ impl Amount {
 
         let amount_shifted = amount * Self::MAX_AMOUNT_DECIMAL_SHIFT;
         let amount_rounded = amount_shifted.round();
-
         if (amount_rounded - amount_shifted).abs() > 0.0001 {
             println!("{} = {}", amount_shifted, amount_rounded);
             return Err(AmountParseError::TooPrecise(amount));
@@ -123,7 +121,6 @@ impl Serialize for Amount {
         // Example: 123456 => (123456.0000 / 10000.0) => 12.3456
         let csv_float = (self.0 as f64).round();
         let csv_float_shifted = csv_float / Self::MAX_AMOUNT_DECIMAL_SHIFT;
-
         serializer.serialize_f64(csv_float_shifted)
     }
 }

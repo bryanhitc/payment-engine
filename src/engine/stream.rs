@@ -26,12 +26,10 @@ impl StreamPaymentEngine {
     ) -> Result<ClientSnapshot, TransactionProcessError> {
         let client_manager = SingleClientManager::new(client_id);
         let mut processor = TransactionProcessor::new(client_manager);
-
         while let Ok(transaction) = receiver.recv() {
             if let Err(err) = processor.process(transaction) {
                 // Silently fail + log if business logic error per PDF instructions
                 error!("{}", err);
-
                 if let TransactionProcessError::Unknown = err {
                     return Err(err);
                 }
@@ -48,7 +46,6 @@ impl PaymentEngine for StreamPaymentEngine {
 
     fn process(&mut self, transaction: Transaction) -> Result<(), Self::ProcessError> {
         self.num_enqueued_transactions += 1;
-
         let client_id = transaction.client_id;
         let sender = self.senders.entry(client_id).or_insert_with(|| {
             // TODO (PERF): Would probably be faster to use Ringbuf SPSC bounded channel, but then
@@ -56,14 +53,12 @@ impl PaymentEngine for StreamPaymentEngine {
             let (sender, receiver) = crossbeam::channel::unbounded::<Transaction>();
 
             info!("[Client {client_id}] spawning worker");
-
             self.client_workers.insert(
                 client_id,
                 // TODO (PERF + CORRECTNESS): threadpool, otherwise, we have N threads
                 // where N = # unique clients. Obviously, this won't scale.
                 std::thread::spawn(move || Self::client_worker_thread(client_id, receiver)),
             );
-
             sender
         });
 
@@ -79,15 +74,12 @@ impl PaymentEngine for StreamPaymentEngine {
         drop(self.senders);
 
         let mut results = Vec::with_capacity(self.client_workers.len());
-
-        for (_client_id, handle) in self.client_workers {
+        for handle in self.client_workers.into_values() {
             let result = handle
                 .join()
                 .unwrap_or(Err(TransactionProcessError::Unknown));
-
             results.push(result);
         }
-
         results
     }
 }

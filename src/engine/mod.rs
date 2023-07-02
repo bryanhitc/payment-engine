@@ -79,7 +79,6 @@ where
         let client = self
             .client_manager
             .get_or_insert_client_mut(transaction.client_id);
-
         if client.is_locked {
             // In a real system, we probably don't want to drop a transaction
             // if the account is locked, but rather keep it in a separate queue.
@@ -91,121 +90,119 @@ where
             TransactionType::Deposit => {
                 // As mentioned elsewhere, if csv + serde weren't giving me problems,
                 // I would've included the amount in the deposit and withdrawal variants
-                // so we don't need .unwrap()...
+                // so we don't need `.ok_or()`...
                 //
                 // This invariant is *currently* upheld throughout the project, though,
-                // so this is safe.
-                let amount = transaction.amount.unwrap();
-
+                // so this error will never be returned.
+                let amount = transaction.amount.ok_or(TransactionProcessError::Unknown)?;
                 client.available += amount;
                 client
                     .basic_transactions
                     .insert(transaction.id, transaction);
-
                 Ok(())
             }
             TransactionType::Withdrawal => {
-                let amount = transaction.amount.unwrap();
+                let amount = transaction.amount.ok_or(TransactionProcessError::Unknown)?;
+                if client.available < amount {
+                    return Err(TransactionProcessError::InsufficientFunds(client.id, id));
+                }
 
-                (client.available >= amount)
-                    .then(|| {
-                        client.available -= amount;
-                        client
-                            .basic_transactions
-                            .insert(transaction.id, transaction);
-                    })
-                    .ok_or(TransactionProcessError::InsufficientFunds(client.id, id))
+                client.available -= amount;
+                client
+                    .basic_transactions
+                    .insert(transaction.id, transaction);
+                Ok(())
             }
             TransactionType::Dispute => {
                 let basic_transaction = client.basic_transactions.get(&id).ok_or(
                     TransactionProcessError::InvalidDisputeNotFound(client.id, id),
                 )?;
-
-                client
-                    .disputes
-                    .insert(id)
-                    .then(|| {
-                        let amount = basic_transaction.amount.unwrap();
-
-                        // Not sure if charging back a withdrawal (sending money back) makes sense...
-                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
-                        // for this + simply change amount's sign.
-                        match basic_transaction.action {
-                            TransactionType::Deposit => {
-                                client.available -= amount;
-                                client.held += amount;
-                            }
-                            TransactionType::Withdrawal => {
-                                client.available += amount;
-                                client.held -= amount;
-                            }
-                            _ => unreachable!("invariant violated"),
-                        }
-                    })
-                    .ok_or(TransactionProcessError::InvalidDisputeDuplicate(
+                if !client.disputes.insert(id) {
+                    return Err(TransactionProcessError::InvalidDisputeDuplicate(
                         client.id, id,
-                    ))
+                    ));
+                }
+
+                let amount = basic_transaction
+                    .amount
+                    .ok_or(TransactionProcessError::Unknown)?;
+
+                // Not sure if charging back a withdrawal (sending money back) makes sense...
+                // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                // for this + simply change amount's sign.
+                match basic_transaction.action {
+                    TransactionType::Deposit => {
+                        client.available -= amount;
+                        client.held += amount;
+                    }
+                    TransactionType::Withdrawal => {
+                        client.available += amount;
+                        client.held -= amount;
+                    }
+                    _ => unreachable!("invariant violated"),
+                }
+                Ok(())
             }
             TransactionType::Resolve => {
                 let basic_transaction = client.basic_transactions.get(&id).ok_or(
                     TransactionProcessError::InvalidResolveNotFound(client.id, id),
                 )?;
-
-                client
-                    .disputes
-                    .remove(&id)
-                    .then(|| {
-                        let amount = basic_transaction.amount.unwrap();
-
-                        // Not sure if charging back a withdrawal (sending money back) makes sense...
-                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
-                        // for this + simply change amount's sign.
-                        match basic_transaction.action {
-                            TransactionType::Deposit => {
-                                client.held -= amount;
-                                client.available += amount;
-                            }
-                            TransactionType::Withdrawal => {
-                                client.held += amount;
-                                client.available -= amount;
-                            }
-                            _ => unreachable!("invariant violated"),
-                        }
-                    })
-                    .ok_or(TransactionProcessError::InvalidResolveNotDisputed(
+                if !client.disputes.remove(&id) {
+                    return Err(TransactionProcessError::InvalidResolveNotDisputed(
                         client.id, id,
-                    ))
+                    ));
+                }
+
+                let amount = basic_transaction
+                    .amount
+                    .ok_or(TransactionProcessError::Unknown)?;
+
+                // Not sure if charging back a withdrawal (sending money back) makes sense...
+                // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                // for this + simply change amount's sign.
+                match basic_transaction.action {
+                    TransactionType::Deposit => {
+                        client.held -= amount;
+                        client.available += amount;
+                    }
+                    TransactionType::Withdrawal => {
+                        client.held += amount;
+                        client.available -= amount;
+                    }
+                    _ => unreachable!("invariant violated"),
+                }
+                Ok(())
             }
             TransactionType::Chargeback => {
                 let basic_transaction = client.basic_transactions.get(&id).ok_or(
                     TransactionProcessError::InvalidChargeBackNotFound(client.id, id),
                 )?;
-
-                client
-                    .disputes
-                    .remove(&id)
-                    .then(|| {
-                        let amount = basic_transaction.amount.unwrap();
-
-                        // Should we lock the account if the user charge backs a withdrawal (sends money back)??
-                        client.is_locked = true;
-
-                        // Not sure if charging back a withdrawal (sending money back) makes sense...
-                        // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
-                        // for this + simply change amount's sign.
-                        match basic_transaction.action {
-                            TransactionType::Deposit => {
-                                client.held -= amount;
-                            }
-                            TransactionType::Withdrawal => {
-                                client.held += amount;
-                            }
-                            _ => unreachable!("invariant violated"),
-                        }
-                    })
-                    .ok_or(TransactionProcessError::InvalidChargeBackNotDisputed(
+                if !client.disputes.remove(&id) {
+                    return Err(TransactionProcessError::InvalidChargeBackNotDisputed(
                         client.id, id,
-                    ))
+                    ));
+                }
+
+                let amount = basic_transaction
+                    .amount
+                    .ok_or(TransactionProcessError::Unknown)?;
+
+                // Should we lock the account if the user charge backs a withdrawal (sends money back)??
+                client.is_locked = true;
+
+                // Not sure if charging back a withdrawal (sending money back) makes sense...
+                // TODO (ENHANCEMENT + MAINTAINABILITY): We should have a single variant
+                // for this + simply change amount's sign.
+                match basic_transaction.action {
+                    TransactionType::Deposit => {
+                        client.held -= amount;
+                    }
+                    TransactionType::Withdrawal => {
+                        client.held += amount;
+                    }
+                    _ => unreachable!("invariant violated"),
+                }
+                Ok(())
             }
         }
     }

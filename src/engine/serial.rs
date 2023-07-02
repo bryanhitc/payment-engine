@@ -16,7 +16,6 @@ impl PaymentEngine for SerialPaymentEngine {
         if let Err(err) = self.processor.process(transaction) {
             // Silently fail + log if business logic error per PDF instructions
             error!("{}", err);
-
             if let TransactionProcessError::Unknown = err {
                 return Err(err);
             }
@@ -28,11 +27,9 @@ impl PaymentEngine for SerialPaymentEngine {
     fn finalize(self) -> Vec<Result<ClientSnapshot, Self::SnapshotError>> {
         let clients = self.processor.client_manager.clients;
         let mut results = Vec::with_capacity(clients.len());
-
-        for (_, client) in clients {
-            results.push(Ok(ClientSnapshot::from(&client)));
+        for client in clients.values() {
+            results.push(Ok(ClientSnapshot::from(client)));
         }
-
         results
     }
 }
