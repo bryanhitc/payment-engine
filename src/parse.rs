@@ -206,7 +206,7 @@ mod amount_tests {
 
 #[cfg(test)]
 mod serde_tests {
-    use serde_test::{assert_de_tokens_error, assert_tokens, Token};
+    use serde_test::{Token, assert_de_tokens_error, assert_tokens};
 
     use crate::parse::*;
     use crate::*;

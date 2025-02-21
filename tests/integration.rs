@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod integration_tests {
     use payment_engine::{
+        ClientSnapshot, Transaction,
         engine::{Engine, PaymentEngine},
         parse::Amount,
-        ClientSnapshot, Transaction,
     };
 
     #[test]
