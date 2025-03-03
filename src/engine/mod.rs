@@ -37,7 +37,7 @@ impl ClientManager for MultiClientManager {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TransactionProcessError {
     ClientLocked(ClientId, TransactionId),
     InsufficientFunds(ClientId, TransactionId),
@@ -219,503 +219,532 @@ pub trait PaymentEngine {
 
 #[cfg(test)]
 mod processor_tests {
+    use std::ops::Deref;
+
+    use googletest::prelude::*;
+
     use super::*;
     use crate::parse::Amount;
 
-    #[test]
+    #[gtest]
     pub fn can_not_double_resolve() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
+            processor.process(Transaction::new(
+                1,
+                1,
+                TransactionType::Deposit,
+                Amount::new(3.0).ok()
+            )),
+            ok(())
+        );
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
+        );
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Resolve, None,)),
+            ok(())
         );
 
-        let resolve = Transaction::new(2, 1, TransactionType::Resolve, None);
-
-        assert_eq!(Ok(()), processor.process(resolve.clone()));
-
-        assert_eq!(
-            Err(TransactionProcessError::InvalidResolveNotDisputed(1, 2)),
-            processor.process(resolve)
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Resolve, None,)),
+            err(eq(TransactionProcessError::InvalidResolveNotDisputed(1, 2)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn can_not_resolve_without_dispute() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
         let resolve = Transaction::new(2, 1, TransactionType::Resolve, None);
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidResolveNotFound(1, 2)),
-            processor.process(resolve.clone())
+        assert_that!(
+            processor.process(resolve.clone()),
+            err(eq(TransactionProcessError::InvalidResolveNotFound(1, 2)))
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidResolveNotDisputed(1, 2)),
-            processor.process(resolve.clone())
+        assert_that!(
+            processor.process(resolve.clone()),
+            err(eq(TransactionProcessError::InvalidResolveNotDisputed(1, 2)))
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert_eq!(Ok(()), processor.process(resolve.clone()));
+        assert_that!(processor.process(resolve.clone()), ok(()));
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidResolveNotDisputed(1, 2)),
-            processor.process(resolve)
+        assert_that!(
+            processor.process(resolve),
+            err(eq(TransactionProcessError::InvalidResolveNotDisputed(1, 2)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn can_not_charge_back_without_dispute() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
         let chargeback = Transaction::new(2, 1, TransactionType::Chargeback, None);
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidChargeBackNotFound(1, 2)),
-            processor.process(chargeback.clone())
+        assert_that!(
+            processor.process(chargeback.clone()),
+            err(eq(TransactionProcessError::InvalidChargeBackNotFound(1, 2)))
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidChargeBackNotDisputed(1, 2)),
-            processor.process(chargeback.clone())
+        assert_that!(
+            processor.process(chargeback.clone()),
+            err(eq(TransactionProcessError::InvalidChargeBackNotDisputed(
+                1, 2
+            )))
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert_eq!(Ok(()), processor.process(chargeback.clone()));
+        assert_that!(processor.process(chargeback.clone()), ok(()));
 
-        assert_eq!(
-            Err(TransactionProcessError::ClientLocked(1, 2)),
-            processor.process(chargeback)
+        assert_that!(
+            processor.process(chargeback),
+            err(eq(TransactionProcessError::ClientLocked(1, 2)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn duplicate_dispute_does_not_affect_client_balances() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 1,
                 1,
                 TransactionType::Deposit,
                 Amount::new(5.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
-
-            assert_eq!(client.available, Amount::new(8.0).unwrap());
-            assert_eq!(client.held, Amount::from(0));
-        }
-
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(8.0).unwrap(),
+                held: Amount::from(0),
+            })
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
-
-            assert_eq!(client.available, Amount::new(5.0).unwrap());
-            assert_eq!(client.held, Amount::new(3.0).unwrap());
-        }
-
-        assert_eq!(
-            Err(TransactionProcessError::InvalidDisputeDuplicate(1, 2)),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        let client = processor.client_manager.get_or_insert_client_mut(1);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(5.0).unwrap(),
+                held: Amount::new(3.0).unwrap(),
+            })
+        );
 
-        assert_eq!(client.available, Amount::new(5.0).unwrap());
-        assert_eq!(client.held, Amount::new(3.0).unwrap());
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            err(eq(TransactionProcessError::InvalidDisputeDuplicate(1, 2))),
+        );
+
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(5.0).unwrap(),
+                held: Amount::new(3.0).unwrap(),
+            })
+        );
     }
 
-    #[test]
+    #[gtest]
     pub fn charging_back_locks_client() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert!(
-            !processor
-                .client_manager
-                .get_or_insert_client_mut(1)
-                .is_locked
-        );
-
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
-        );
-
-        assert!(
+        assert_that!(
             processor
                 .client_manager
                 .get_or_insert_client_mut(1)
-                .is_locked
+                .is_locked,
+            is_false()
+        );
+
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None)),
+            ok(())
+        );
+
+        assert_that!(
+            processor
+                .client_manager
+                .get_or_insert_client_mut(1)
+                .is_locked,
+            is_true()
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn deposit_charge_back_releases_held_funds() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 1,
                 1,
                 TransactionType::Deposit,
                 Amount::new(1.5).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
-
-            assert_eq!(client.available, Amount::new(4.5).unwrap());
-            assert_eq!(client.held, Amount::from(0));
-        }
-
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(4.5).unwrap(),
+                held: Amount::from(0),
+            })
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
-
-            assert_eq!(client.available, Amount::new(1.5).unwrap());
-            assert_eq!(client.held, Amount::new(3.0).unwrap());
-        }
-
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        let client = processor.client_manager.get_or_insert_client_mut(1);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(1.5).unwrap(),
+                held: Amount::new(3.0).unwrap(),
+            })
+        );
 
-        assert_eq!(client.available, Amount::new(1.5).unwrap());
-        assert_eq!(client.held, Amount::from(0),);
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None)),
+            ok(())
+        );
+
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(1.5).unwrap(),
+                held: Amount::from(0),
+            })
+        );
     }
 
-    #[test]
+    #[gtest]
     pub fn can_not_process_locked_client() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
         let client = processor.client_manager.get_or_insert_client_mut(1);
         client.is_locked = true;
 
-        let mut transaction =
-            Transaction::new(2, 1, TransactionType::Deposit, Amount::new(3.0).ok());
-
-        let result = processor.process(transaction.clone());
-
-        assert_eq!(Err(TransactionProcessError::ClientLocked(1, 2)), result);
-
-        transaction.action = TransactionType::Withdrawal;
-        let result = processor.process(transaction.clone());
-
-        assert_eq!(Err(TransactionProcessError::ClientLocked(1, 2)), result);
-
-        transaction.action = TransactionType::Dispute;
-        let result = processor.process(transaction.clone());
-
-        assert_eq!(Err(TransactionProcessError::ClientLocked(1, 2)), result);
-
-        transaction.action = TransactionType::Resolve;
-        let result = processor.process(transaction.clone());
-
-        assert_eq!(Err(TransactionProcessError::ClientLocked(1, 2)), result);
-
-        transaction.action = TransactionType::Chargeback;
-        let result = processor.process(transaction);
-
-        assert_eq!(Err(TransactionProcessError::ClientLocked(1, 2)), result);
+        for transaction_type in [
+            TransactionType::Deposit,
+            TransactionType::Withdrawal,
+            TransactionType::Dispute,
+            TransactionType::Resolve,
+            TransactionType::Chargeback,
+        ] {
+            expect_that!(
+                processor.process(Transaction::new(
+                    2,
+                    1,
+                    transaction_type,
+                    Amount::new(3.0).ok()
+                )),
+                err(eq(TransactionProcessError::ClientLocked(1, 2)))
+            );
+        }
     }
 
-    #[test]
+    #[gtest]
     pub fn can_not_dispute_other_clients_transactions() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
         processor.client_manager.get_or_insert_client_mut(1);
         processor.client_manager.get_or_insert_client_mut(2);
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Err(TransactionProcessError::InvalidDisputeNotFound(2, 2)),
-            processor.process(Transaction::new(2, 2, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 2, TransactionType::Dispute, None)),
+            err(eq(TransactionProcessError::InvalidDisputeNotFound(2, 2)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn client_lock_does_not_impact_other_clients() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
         processor.client_manager.get_or_insert_client_mut(1);
         processor.client_manager.get_or_insert_client_mut(2);
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
-            ))
+            )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
-            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None))
+        assert_that!(
+            processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None)),
+            ok(())
         );
 
-        assert!(
+        assert_that!(
             processor
                 .client_manager
                 .get_or_insert_client_mut(1)
-                .is_locked
+                .is_locked,
+            is_true()
         );
 
-        assert!(
-            !processor
+        assert_that!(
+            processor
                 .client_manager
                 .get_or_insert_client_mut(2)
-                .is_locked
+                .is_locked,
+            is_false()
         );
     }
 
-    #[test]
+    #[gtest]
     fn dispute_and_resolve_is_noop() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 1,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
             )),
+            ok(())
         );
 
-        assert_eq!(
+        assert_that!(
             processor
                 .client_manager
                 .get_or_insert_client_mut(1)
                 .available,
-            Amount::new(3.0).unwrap(),
+            eq(Amount::new(3.0).unwrap()),
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(1, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(1, 1, TransactionType::Resolve, None)),
+            ok(())
         );
 
-        assert_eq!(
+        assert_that!(
             processor
                 .client_manager
                 .get_or_insert_client_mut(1)
                 .available,
-            Amount::new(3.0).unwrap(),
+            eq(Amount::new(3.0).unwrap()),
         );
     }
 
-    #[test]
+    #[gtest]
     fn withdraw_holds_negative_funds_and_credits_available() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
             )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Withdrawal,
                 Amount::new(1.0).ok()
             )),
+            ok(())
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(2.0).unwrap(),
+                held: Amount::from(0)
+            })
+        );
 
-            assert_eq!(client.available, Amount::new(2.0).unwrap());
-            assert_eq!(client.held, Amount::from(0));
-        }
-
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(3.0).unwrap(),
+                held: Amount::new(-1.0).unwrap(),
+            })
+        );
 
-            assert_eq!(client.available, Amount::new(3.0).unwrap());
-            assert_eq!(client.held, Amount::new(-1.0).unwrap());
-        }
-
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(2, 1, TransactionType::Resolve, None)),
+            ok(())
         );
 
-        let client = processor.client_manager.get_or_insert_client_mut(1);
-
-        assert_eq!(client.available, Amount::new(2.0).unwrap(),);
-        assert_eq!(client.held, Amount::from(0),);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(2.0).unwrap(),
+                held: Amount::from(0),
+            })
+        );
     }
 
-    #[test]
+    #[gtest]
     fn withdraw_charge_back_releases_held_funds() {
         let mut processor = TransactionProcessor::<MultiClientManager>::default();
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Deposit,
                 Amount::new(3.0).ok()
             )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(
                 2,
                 1,
                 TransactionType::Withdrawal,
                 Amount::new(1.0).ok()
             )),
+            ok(())
         );
 
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(2, 1, TransactionType::Dispute, None)),
+            ok(())
         );
 
-        {
-            let client = processor.client_manager.get_or_insert_client_mut(1);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                available: Amount::new(3.0).unwrap(),
+                held: Amount::new(-1.0).unwrap()
+            })
+        );
 
-            assert_eq!(client.available, Amount::new(3.0).unwrap());
-            assert_eq!(client.held, Amount::new(-1.0).unwrap());
-        }
-
-        assert_eq!(
-            Ok(()),
+        assert_that!(
             processor.process(Transaction::new(2, 1, TransactionType::Chargeback, None)),
+            ok(())
         );
 
-        let client = processor.client_manager.get_or_insert_client_mut(1);
-
-        assert!(client.is_locked);
-        assert_eq!(client.available, Amount::new(3.0).unwrap(),);
-        assert_eq!(client.held, Amount::from(0),);
+        assert_that!(
+            processor.client_manager.get_or_insert_client_mut(1).deref(),
+            matches_pattern!(&Client {
+                is_locked: true,
+                available: Amount::new(3.0).unwrap(),
+                held: Amount::from(0)
+            })
+        );
     }
 }

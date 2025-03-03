@@ -138,90 +138,73 @@ impl<'de> Deserialize<'de> for Amount {
 
 #[cfg(test)]
 mod amount_tests {
+    use googletest::prelude::*;
+
     use crate::parse::{Amount, AmountParseError};
 
-    #[test]
+    #[gtest]
     pub fn new_amount_rejects_overflow_before_shift() {
         let overflow_before_shift = u64::MAX as f64;
-        let result = Amount::new(overflow_before_shift);
-
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            AmountParseError::Overflow(overflow_before_shift)
+        expect_that!(
+            Amount::new(overflow_before_shift),
+            err(eq(AmountParseError::Overflow(overflow_before_shift)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn new_amount_rejects_overflow_after_shift() {
         let overflow_after_shift = (u64::MAX as f64 / Amount::MAX_AMOUNT_DECIMAL_SHIFT) + 1.0;
-        let result = Amount::new(overflow_after_shift);
-
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            AmountParseError::Overflow(overflow_after_shift)
+        expect_that!(
+            Amount::new(overflow_after_shift),
+            err(eq(AmountParseError::Overflow(overflow_after_shift)))
         );
     }
 
-    #[test]
+    #[gtest]
     pub fn new_amount_rejects_if_still_float_after_shift() {
-        let amount = 123.45678;
-        let result = Amount::new(123.45678);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), AmountParseError::TooPrecise(amount));
+        expect_that!(
+            Amount::new(123.45678),
+            err(eq(AmountParseError::TooPrecise(123.45678)))
+        );
     }
 
-    #[test]
+    #[gtest]
     pub fn new_amount_accepts_zero() {
-        let amount = Amount::new(0.0);
-
-        assert!(amount.is_ok());
-        assert_eq!(amount.unwrap().0, 0);
+        expect_that!(Amount::new(0.0), ok(eq(0.into())));
     }
 
-    #[test]
+    #[gtest]
     pub fn new_amount_accepts_if_u64_max_after_shift() {
-        let u64_max_after_shift = u64::MAX as f64 / Amount::MAX_AMOUNT_DECIMAL_SHIFT;
-        let amount = Amount::new(u64_max_after_shift);
-
-        assert!(amount.is_ok());
-        assert_eq!(amount.unwrap().0, i64::MAX);
+        expect_that!(
+            Amount::new(u64::MAX as f64 / Amount::MAX_AMOUNT_DECIMAL_SHIFT),
+            ok(eq(i64::MAX.into()))
+        )
     }
 
-    #[test]
+    #[gtest]
     pub fn new_amount_applies_decimal_shift() {
-        let amount = Amount::new(123.4567);
-
-        assert!(amount.is_ok());
-        assert_eq!(amount.unwrap().0, 1234567);
-
-        let amount = Amount::new(562.844);
-
-        assert!(amount.is_ok());
-        assert_eq!(amount.unwrap().0, 5628440);
+        expect_that!(Amount::new(123.4567), ok(eq(1234567.into())));
+        expect_that!(Amount::new(562.844), ok(eq(5628440.into())));
     }
 }
 
 #[cfg(test)]
 mod serde_tests {
+    use anyhow::Result;
     use serde_test::{Token, assert_de_tokens_error, assert_tokens};
 
     use crate::parse::*;
     use crate::*;
 
     #[test]
-    pub fn serialize_and_deserialize_amount_transactions() {
-        let amount = Amount::new(123.4567);
-
-        assert!(amount.is_ok());
-
-        let amount = amount.unwrap();
-        let transaction = Transaction::new(1, 2, TransactionType::Withdrawal, Some(amount));
-
+    pub fn serialize_and_deserialize_amount_transactions() -> Result<()> {
         assert_tokens(
-            &transaction,
+            &Transaction::new(
+                1,
+                2,
+                TransactionType::Withdrawal,
+                Some(Amount::new(123.4567)?),
+            ),
             &[
                 Token::Struct {
                     name: "Transaction",
@@ -242,14 +225,13 @@ mod serde_tests {
                 Token::StructEnd,
             ],
         );
+        Ok(())
     }
 
     #[test]
     pub fn serialize_and_deserialize_non_amount_transactions() {
-        let transaction = Transaction::new(1, 2, TransactionType::Resolve, None);
-
         assert_tokens(
-            &transaction,
+            &Transaction::new(1, 2, TransactionType::Resolve, None),
             &[
                 Token::Struct {
                     name: "Transaction",

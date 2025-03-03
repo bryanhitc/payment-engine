@@ -3,16 +3,16 @@
 
 #[cfg(test)]
 mod integration_tests {
+    use googletest::prelude::*;
     use payment_engine::{
         ClientSnapshot, Transaction,
         engine::{Engine, PaymentEngine},
         parse::Amount,
     };
 
-    #[test]
+    #[gtest]
     fn integration() {
         let mut engine = Engine::default();
-
         let transactions = [
             Transaction {
                 id: 1,
@@ -84,47 +84,25 @@ mod integration_tests {
             },
         ];
 
-        for transaction in transactions {
-            let result = engine.process(transaction);
-            assert!(result.is_ok());
-        }
-
-        let mut snapshots = engine
-            .finalize()
-            .into_iter()
-            .filter_map(|result| result.ok())
-            .collect::<Vec<_>>();
-
-        snapshots.sort_by_key(|snapshot| snapshot.client);
-
-        let mut snapshots = snapshots.into_iter();
-
-        let client_1_snapshot = snapshots.next().unwrap();
-        let client_2_snapshot = snapshots.next().unwrap();
-
-        assert_eq!(1, client_1_snapshot.client);
-        assert_eq!(2, client_2_snapshot.client);
-
-        assert_eq!(
-            ClientSnapshot {
-                client: 1,
-                available: Amount::new(7.5).unwrap(),
-                held: Amount::new(0.0).unwrap(),
-                total: Amount::new(7.5).unwrap(),
-                locked: true,
-            },
-            client_1_snapshot
-        );
-
-        assert_eq!(
-            ClientSnapshot {
-                client: 2,
-                available: Amount::new(9.0).unwrap(),
-                held: Amount::new(0.0).unwrap(),
-                total: Amount::new(9.0).unwrap(),
-                locked: false,
-            },
-            client_2_snapshot
+        assert_that!(transactions.map(|t| engine.process(t)), each(ok(())));
+        expect_that!(
+            engine.finalize(),
+            unordered_elements_are!(
+                ok(eq(&ClientSnapshot {
+                    client: 1,
+                    available: Amount::new(7.5).unwrap(),
+                    held: Amount::new(0.0).unwrap(),
+                    total: Amount::new(7.5).unwrap(),
+                    locked: true,
+                })),
+                ok(eq(&ClientSnapshot {
+                    client: 2,
+                    available: Amount::new(9.0).unwrap(),
+                    held: Amount::new(0.0).unwrap(),
+                    total: Amount::new(9.0).unwrap(),
+                    locked: false,
+                }))
+            )
         );
     }
 }

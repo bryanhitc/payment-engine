@@ -78,7 +78,7 @@ impl From<&Client> for ClientSnapshot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Client {
     id: ClientId,
     available: Amount,
