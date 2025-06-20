@@ -373,6 +373,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(8.0).unwrap(),
                 held: Amount::from(0),
+                ..
             })
         );
 
@@ -386,6 +387,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(5.0).unwrap(),
                 held: Amount::new(3.0).unwrap(),
+                ..
             })
         );
 
@@ -399,6 +401,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(5.0).unwrap(),
                 held: Amount::new(3.0).unwrap(),
+                ..
             })
         );
     }
@@ -473,6 +476,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(4.5).unwrap(),
                 held: Amount::from(0),
+                ..
             })
         );
 
@@ -486,6 +490,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(1.5).unwrap(),
                 held: Amount::new(3.0).unwrap(),
+                ..
             })
         );
 
@@ -499,6 +504,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(1.5).unwrap(),
                 held: Amount::from(0),
+                ..
             })
         );
     }
@@ -665,7 +671,8 @@ mod processor_tests {
             processor.client_manager.get_or_insert_client_mut(1).deref(),
             matches_pattern!(&Client {
                 available: Amount::new(2.0).unwrap(),
-                held: Amount::from(0)
+                held: Amount::from(0),
+                ..
             })
         );
 
@@ -679,6 +686,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(3.0).unwrap(),
                 held: Amount::new(-1.0).unwrap(),
+                ..
             })
         );
 
@@ -692,6 +700,7 @@ mod processor_tests {
             matches_pattern!(&Client {
                 available: Amount::new(2.0).unwrap(),
                 held: Amount::from(0),
+                ..
             })
         );
     }
@@ -729,7 +738,8 @@ mod processor_tests {
             processor.client_manager.get_or_insert_client_mut(1).deref(),
             matches_pattern!(&Client {
                 available: Amount::new(3.0).unwrap(),
-                held: Amount::new(-1.0).unwrap()
+                held: Amount::new(-1.0).unwrap(),
+                ..
             })
         );
 
@@ -743,7 +753,8 @@ mod processor_tests {
             matches_pattern!(&Client {
                 is_locked: true,
                 available: Amount::new(3.0).unwrap(),
-                held: Amount::from(0)
+                held: Amount::from(0),
+                ..
             })
         );
     }
